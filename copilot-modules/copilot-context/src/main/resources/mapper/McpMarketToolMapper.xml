@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.alibaba.cloud.ai.copilot.mapper.McpMarketToolMapper">
+
+    <update id="updateLoadedStatus">
+        UPDATE mcp_market_tool
+        SET is_loaded = #{isLoaded},
+            local_tool_id = #{localToolId}
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectByMarketId" resultType="com.alibaba.cloud.ai.copilot.entity.McpMarketTool">
+        SELECT * FROM mcp_market_tool
+        WHERE market_id = #{marketId}
+        ORDER BY create_time DESC
+    </select>
+
+    <select id="selectByMarketIdAndLoaded" resultType="com.alibaba.cloud.ai.copilot.entity.McpMarketTool">
+        SELECT * FROM mcp_market_tool
+        WHERE market_id = #{marketId}
+          AND is_loaded = #{isLoaded}
+        ORDER BY create_time DESC
+    </select>
+
+    <select id="selectByMarketIdAndServerId" resultType="com.alibaba.cloud.ai.copilot.entity.McpMarketTool">
+        SELECT * FROM mcp_market_tool
+        WHERE market_id = #{marketId}
+          AND JSON_UNQUOTE(JSON_EXTRACT(tool_metadata, '$.id')) = #{serverId}
+            LIMIT 1
+    </select>
+
+</mapper>

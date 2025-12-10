@@ -7,17 +7,25 @@ import styled from "styled-components";
 import {ThemeMode} from "antd-style";
 import {Divider} from "antd";
 import MCPSettings from "@/components/Settings/MCPSettings";
+import NpxPackagesTab from "@/components/Settings/MCPSettings/NpxPackagesTab";
 import KnowledgeSettings from "@/components/Settings/KnowledgeSettings";
 import ModelSettings from "@/components/Settings/ModelSettings";
 import PromptSettings from "@/components/Settings/PromptSettings";
 
-export type SettingsTab = "General" | "Quota" | "MCPServer" | "Knowledge" | "Models" | "Prompts";
+export type SettingsTab =
+  | "General"
+  | "Quota"
+  | "MCPServer"
+  | "MCPNpx"
+  | "Knowledge"
+  | "Models"
+  | "Prompts";
 
-const isElectron = typeof window !== "undefined" && !!window.electron;
 export const TAB_KEYS = {
   GENERAL: "General" as const,
   Quota: "Quota" as const,
   MCPServer: "MCPServer" as const,
+  MCPNpx: "MCPNpx" as const,
   Knowledge: "Knowledge" as const,
   Models: "Models" as const,
   Prompts: "Prompts" as const,
@@ -29,7 +37,7 @@ interface SettingsProps {
   initialTab?: SettingsTab;
 }
 
-export function Settings({
+function Settings({
   isOpen,
   onClose,
   initialTab = TAB_KEYS.GENERAL,
@@ -69,6 +77,7 @@ export function Settings({
     id: SettingsTab;
     label: string;
     icon: JSX.Element;
+    parent?: SettingsTab;
   }> = [
     {
       id: TAB_KEYS.GENERAL,
@@ -130,6 +139,27 @@ export function Settings({
           strokeLinejoin="round"
           strokeWidth={2}
           d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+        />
+      </svg>
+    ),
+  });
+
+  tabs.push({
+    id: TAB_KEYS.MCPNpx,
+    label: t("settings.mcp.npx_list.title"),
+    parent: TAB_KEYS.MCPServer,
+    icon: (
+      <svg
+        className="w-4 h-4"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M4 6h16M4 10h10M4 14h16M4 18h10"
         />
       </svg>
     ),
@@ -251,7 +281,8 @@ export function Settings({
         <div className="flex-1 p-5 overflow-y-auto">
           {activeTab === TAB_KEYS.GENERAL && <GeneralSettings />}
           {activeTab === TAB_KEYS.Quota && <QuotaSettings />}
-          {activeTab === TAB_KEYS.MCPServer && <MCPSettings />}
+          {activeTab === TAB_KEYS.MCPServer && <MCPSettings isActive />}
+          {activeTab === TAB_KEYS.MCPNpx && <NpxPackagesTab isActive />}
           {activeTab === TAB_KEYS.Knowledge && <KnowledgeSettings />}
           {activeTab === TAB_KEYS.Models && <ModelSettings />}
           {activeTab === TAB_KEYS.Prompts && <PromptSettings />}
@@ -282,6 +313,8 @@ export function Settings({
     document.body
   );
 }
+
+export { Settings }
 
 export const SettingRow = styled.div`
   display: flex;
@@ -322,8 +355,6 @@ export const SettingContainer = styled.div<{ theme?: ThemeMode }>`
   flex-direction: column;
   flex: 1;
   @ts-ignore height: calc(100vh - var(--navbar-height));
-  padding: 40px;
-  padding-top: 50px;
   overflow-y: scroll;
   font-family: Ubuntu;
   background: ${(props) =>

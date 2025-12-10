@@ -14,6 +14,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/pro-components": "^2.8.10",
     "@babel/parser": "^7.26.5",
     "@babel/traverse": "^7.26.5",
     "@codemirror/autocomplete": "^6.18.4",

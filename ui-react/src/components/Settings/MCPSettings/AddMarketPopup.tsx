@@ -1,9 +1,9 @@
 import React, {forwardRef, useEffect, useImperativeHandle, useRef, useState} from 'react'
 import {useTranslation} from 'react-i18next'
-import {McpToolData} from "@/types/mcp"
+import {McpMarket} from "@/types/mcp"
 import {TopView} from "@/components/TopView"
 import classNames from "classnames"
-import {saveMcpServer, updateMcpServer} from '@/api/mcpServers'
+import {saveMcpMarket, updateMcpMarket} from '@/api/mcpMarkets'
 import {message} from 'antd'
 import {EditorState} from "@codemirror/state"
 import {EditorView} from "@codemirror/view"
@@ -12,20 +12,19 @@ import {HighlightStyle, syntaxHighlighting} from "@codemirror/language"
 import {tags as t} from "@lezer/highlight"
 
 interface ShowParams {
-    server?: McpToolData
-    create?: boolean
+    market?: McpMarket
 }
 
 interface Props extends ShowParams {
     resolve: (data: any) => void
 }
 
-interface MCPFormValues {
+interface MarketFormValues {
     name: string
+    url: string
     description: string
-    type: 'LOCAL' | 'REMOTE'
+    authConfig: string
     status: 'ENABLED' | 'DISABLED'
-    configJson: string
 }
 
 const CustomModal = ({ children, title, open, onOk, onCancel, okText, cancelText, confirmLoading }) => {
@@ -37,7 +36,6 @@ const CustomModal = ({ children, title, open, onOk, onCancel, okText, cancelText
             <div className="fixed inset-0 overflow-y-auto">
                 <div className="flex min-h-full items-center justify-center p-6">
                     <div className="relative w-full max-w-2xl transform rounded-xl bg-white dark:bg-gray-800 shadow-2xl transition-all">
-                        {/* Header */}
                         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200/80 dark:border-gray-700/80">
                             <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                                 {title}
@@ -51,13 +49,9 @@ const CustomModal = ({ children, title, open, onOk, onCancel, okText, cancelText
                                 </svg>
                             </button>
                         </div>
-
-                        {/* Content */}
                         <div className="px-6 py-4 max-h-[70vh] overflow-y-auto">
                             {children}
                         </div>
-
-                        {/* Footer */}
                         <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200/80 dark:border-gray-700/80">
                             <button
                                 type="button"
@@ -105,12 +99,11 @@ const CustomModal = ({ children, title, open, onOk, onCancel, okText, cancelText
     )
 }
 
-const FormField = ({ label, required, children, error, tooltip }: {
+const FormField = ({ label, required, children, error }: {
     label: string
     required?: boolean
     children: React.ReactNode
     error?: string
-    tooltip?: string
 }) => (
     <div className="mb-4">
         <div className="flex items-center gap-2 mb-1.5">
@@ -118,16 +111,6 @@ const FormField = ({ label, required, children, error, tooltip }: {
                 {label}
                 {required && <span className="text-red-500 ml-1">*</span>}
             </label>
-            {tooltip && (
-                <div className="group relative">
-                    <svg className="w-4 h-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" />
-                    </svg>
-                    <div className="invisible group-hover:visible absolute left-full ml-2 w-48 p-2 bg-gray-900 text-white text-xs rounded shadow-lg">
-                        {tooltip}
-                    </div>
-                </div>
-            )}
         </div>
         {children}
         {error && (
@@ -156,20 +139,12 @@ const Input = ({ value, onChange, placeholder, disabled, className = "" }) => (
     />
 )
 
-const TextArea = ({ value, onChange, placeholder, rows = 3, className = "", style }: {
-    value: string
-    onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
-    placeholder?: string
-    rows?: number
-    className?: string
-    style?: React.CSSProperties
-}) => (
+const TextArea = ({ value, onChange, placeholder, rows = 3, className = "" }) => (
     <textarea
         value={value}
         onChange={onChange}
         placeholder={placeholder}
         rows={rows}
-        style={style}
         className={classNames(
             "w-full px-3 py-2 text-sm rounded-lg",
             "bg-white dark:bg-gray-900",
@@ -210,25 +185,7 @@ const RadioGroup = ({ value, onChange, options }: {
     </div>
 )
 
-const Toggle = ({ checked, onChange }) => (
-    <button
-        onClick={() => onChange(!checked)}
-        className={classNames(
-            "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out",
-            checked ? "bg-purple-600" : "bg-gray-200 dark:bg-gray-700"
-        )}
-    >
-        <span
-            className={classNames(
-                "inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
-                checked ? "translate-x-6" : "translate-x-1",
-                "mt-0.5"
-            )}
-        />
-    </button>
-)
-
-// JSON 编辑器样式（与 EditMcpJsonPopup 保持一致）
+// JSON 编辑器样式（与 AddMcpServerPopup 保持一致）
 const jsonHighlightStyle = HighlightStyle.define([
     { tag: t.string, color: "#CE9178" }, // 字符串值为红褐色
     { tag: t.propertyName, color: "#9CDCFE" }, // 属性名为浅蓝色
@@ -240,7 +197,7 @@ const jsonHighlightStyle = HighlightStyle.define([
     { tag: t.invalid, color: "#F44747" }, // 无效的 JSON 为红色
 ])
 
-// JSON 编辑器组件
+// JSON 编辑器组件（与 AddMcpServerPopup 保持一致）
 const JsonEditor = forwardRef<
     { format: () => void },
     {
@@ -385,18 +342,21 @@ const JsonEditor = forwardRef<
         return () => {
             view.destroy()
         }
-    }, [])
+    }, []) // 只在组件挂载时初始化一次
 
-    // 同步外部 value 变化
+    // 当 value 变化时更新编辑器内容（用于编辑模式回显）
     useEffect(() => {
-        if (viewRef.current && value !== viewRef.current.state.doc.toString()) {
-            viewRef.current.dispatch({
-                changes: {
-                    from: 0,
-                    to: viewRef.current.state.doc.length,
-                    insert: value || "",
-                },
-            })
+        if (viewRef.current) {
+            const currentValue = viewRef.current.state.doc.toString()
+            if (value !== currentValue) {
+                viewRef.current.dispatch({
+                    changes: {
+                        from: 0,
+                        to: viewRef.current.state.doc.length,
+                        insert: value || "",
+                    },
+                })
+            }
         }
     }, [value])
 
@@ -420,52 +380,67 @@ const JsonEditor = forwardRef<
     )
 })
 
-const PopupContainer: React.FC<Props> = ({ server, create, resolve }) => {
+const PopupContainer: React.FC<Props> = ({ market, resolve }) => {
     const [open, setOpen] = useState(true)
     const { t } = useTranslation()
-    const [formData, setFormData] = useState<MCPFormValues>({
+    const [formData, setFormData] = useState<MarketFormValues>({
         name: "",
+        url: "",
         description: "",
-        type: "LOCAL",
-        status: "ENABLED",
-        configJson: ""
+        authConfig: "",
+        status: "ENABLED"
     })
-    const [errors, setErrors] = useState<Partial<Record<keyof MCPFormValues, string>>>({})
+    const [errors, setErrors] = useState<Partial<Record<keyof MarketFormValues, string>>>({})
     const [loading, setLoading] = useState(false)
+    const [jsonError, setJsonError] = useState("")
+    const jsonEditorRef = useRef<{ format: () => void }>(null)
 
     useEffect(() => {
-        if (server) {
-            // 确保状态值是 ENABLED 或 DISABLED
-            const validStatus = (server.status === 'ENABLED' || server.status === 'DISABLED') 
-                ? server.status 
+        if (market) {
+            const validStatus = (market.status === 'ENABLED' || market.status === 'DISABLED') 
+                ? market.status 
                 : 'ENABLED'
+            const newFormData = {
+                name: market.name || "",
+                url: market.url || "",
+                description: market.description || "",
+                authConfig: market.authConfig || "",
+                status: validStatus
+            }
+            setFormData(newFormData)
+        } else {
+            // 重置表单
             setFormData({
-                name: server.name,
-                description: server.description || "",
-                type: server.type,
-                status: validStatus,
-                configJson: server.configJson || ""
+                name: "",
+                url: "",
+                description: "",
+                authConfig: "",
+                status: "ENABLED"
             })
         }
-    }, [server])
+    }, [market])
 
     const validateForm = () => {
-        const newErrors: Partial<Record<keyof MCPFormValues, string>> = {}
+        const newErrors: Partial<Record<keyof MarketFormValues, string>> = {}
         
         if (!formData.name || formData.name.trim() === '') {
-            newErrors.name = '工具名称不能为空'
+            newErrors.name = '市场名称不能为空'
         }
         
-        if (formData.configJson && formData.configJson.trim() !== '') {
+        if (!formData.url || formData.url.trim() === '') {
+            newErrors.url = 'URL不能为空'
+        }
+        
+        if (formData.authConfig && formData.authConfig.trim() !== '') {
             try {
-                JSON.parse(formData.configJson)
+                JSON.parse(formData.authConfig)
             } catch (e) {
-                newErrors.configJson = '配置信息必须是有效的JSON格式'
+                newErrors.authConfig = '认证配置必须是有效的JSON格式'
             }
         }
 
         setErrors(newErrors)
-        return Object.keys(newErrors).length === 0
+        return Object.keys(newErrors).length === 0 && !jsonError
     }
 
     const onOK = async () => {
@@ -473,37 +448,36 @@ const PopupContainer: React.FC<Props> = ({ server, create, resolve }) => {
 
         setLoading(true)
         try {
-            // 确保状态值是有效的 ENABLED 或 DISABLED
             const validStatus: 'ENABLED' | 'DISABLED' = 
                 (formData.status === 'ENABLED' || formData.status === 'DISABLED') 
                     ? formData.status 
                     : 'ENABLED'
             
-            const toolData: Partial<McpToolData> = {
+            const marketData: Partial<McpMarket> = {
                 name: formData.name.trim(),
+                url: formData.url.trim(),
                 description: formData.description.trim() || null,
-                type: formData.type,
-                status: validStatus,
-                configJson: formData.configJson.trim() || null
+                authConfig: formData.authConfig.trim() || null,
+                status: validStatus
             }
 
-            let savedTool: McpToolData
-            if (server && !create) {
+            let savedMarket: McpMarket
+            if (market && market.id) {
                 // 更新
-                savedTool = await updateMcpServer({ ...toolData, id: server.id })
+                savedMarket = await updateMcpMarket({ ...marketData, id: market.id })
                 message.success('更新成功')
             } else {
                 // 新增
-                savedTool = await saveMcpServer(toolData)
+                savedMarket = await saveMcpMarket(marketData)
                 message.success('添加成功')
             }
 
             setLoading(false)
             setOpen(false)
             TopView.hide(TopViewKey)
-            resolve(savedTool)
+            resolve(savedMarket)
         } catch (error: any) {
-            message.error(error.message || (server ? '更新失败' : '添加失败'))
+            message.error(error.message || (market ? '更新失败' : '添加失败'))
             setLoading(false)
         }
     }
@@ -513,151 +487,137 @@ const PopupContainer: React.FC<Props> = ({ server, create, resolve }) => {
         TopView.hide(TopViewKey)
     }
 
-    AddMcpServerPopup.hide = onCancel
+    AddMarketPopup.hide = onCancel
 
     return (
         <CustomModal
-            title={server ? "编辑 MCP 服务器" : "添加 MCP 服务器"}
+            title={market ? "编辑市场" : "添加市场"}
             open={open}
             onOk={onOK}
             onCancel={onCancel}
-            okText={server ? "保存服务器" : "添加服务器"}
+            okText="保存"
             cancelText="取消"
             confirmLoading={loading}
         >
-            <div className="space-y-6">
-                <FormField
-                    label="工具名称"
-                    required
-                    error={errors.name}
-                >
-                    <Input
-                        value={formData.name}
-                        onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                        placeholder="请输入工具名称"
-                    />
-                </FormField>
+            <FormField label="市场名称" required error={errors.name}>
+                <Input
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    placeholder="请输入市场名称"
+                />
+            </FormField>
 
-                <FormField
-                    label="描述"
-                    error={errors.description}
-                >
-                    <TextArea
-                        value={formData.description}
-                        onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                        placeholder="请输入工具描述"
-                        rows={3}
-                    />
-                </FormField>
+            <FormField label="URL" required error={errors.url}>
+                <Input
+                    value={formData.url}
+                    onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+                    placeholder="请输入市场 URL"
+                />
+            </FormField>
 
-                <FormField
-                    label="类型"
-                    required
-                    error={errors.type}
-                >
-                    <RadioGroup
-                        value={formData.type}
-                        onChange={(value) => setFormData(prev => ({ ...prev, type: value as 'LOCAL' | 'REMOTE' }))}
-                        options={[
-                            { label: '本地', value: 'LOCAL' },
-                            { label: '远程', value: 'REMOTE' }
-                        ]}
-                    />
-                </FormField>
+            <FormField label="描述" error={errors.description}>
+                <TextArea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    placeholder="请输入市场描述"
+                    rows={3}
+                />
+            </FormField>
 
-                <FormField
-                    label="状态"
-                    required
-                    error={errors.status}
-                >
-                    <RadioGroup
-                        value={formData.status}
-                        onChange={(value) => setFormData(prev => ({ ...prev, status: value as 'ENABLED' | 'DISABLED' }))}
-                        options={[
-                            { label: '启用', value: 'ENABLED' },
-                            { label: '禁用', value: 'DISABLED' }
-                        ]}
-                    />
-                </FormField>
-
-                <FormField
-                    label="配置信息"
-                    tooltip="请输入JSON格式的配置信息"
-                    error={errors.configJson}
-                >
-                    <div className="space-y-2">
-                        <div className="flex justify-end">
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    try {
-                                        if (formData.configJson && formData.configJson.trim()) {
-                                            const parsed = JSON.parse(formData.configJson)
-                                            const formatted = JSON.stringify(parsed, null, 2)
-                                            setFormData(prev => ({ ...prev, configJson: formatted }))
-                                            setErrors(prev => ({ ...prev, configJson: undefined }))
-                                        }
-                                    } catch (error: any) {
-                                        setErrors(prev => ({ ...prev, configJson: '配置信息必须是有效的JSON格式' }))
+            <FormField label="认证配置" error={errors.authConfig || jsonError}>
+                <div className="space-y-2">
+                    <div className="flex justify-end">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                try {
+                                    if (formData.authConfig && formData.authConfig.trim()) {
+                                        const parsed = JSON.parse(formData.authConfig)
+                                        const formatted = JSON.stringify(parsed, null, 2)
+                                        setFormData(prev => ({ ...prev, authConfig: formatted }))
+                                        setErrors(prev => ({ ...prev, authConfig: undefined }))
+                                        setJsonError("")
                                     }
-                                }}
-                                className={classNames(
-                                    "px-3 py-1.5 text-sm font-medium rounded-lg",
-                                    "text-gray-700 dark:text-gray-300",
-                                    "bg-white dark:bg-gray-800",
-                                    "border border-gray-300 dark:border-gray-600",
-                                    "hover:bg-gray-50 dark:hover:bg-gray-700/50",
-                                    "focus:outline-none focus:ring-2 focus:ring-purple-500/50",
-                                    "transition duration-150 ease-in-out",
-                                    "flex items-center gap-2"
-                                )}
+                                } catch (error: any) {
+                                    setErrors(prev => ({ ...prev, authConfig: '认证配置必须是有效的JSON格式' }))
+                                    setJsonError(error.message || '认证配置必须是有效的JSON格式')
+                                }
+                            }}
+                            className={classNames(
+                                "px-3 py-1.5 text-sm font-medium rounded-lg",
+                                "text-gray-700 dark:text-gray-300",
+                                "bg-white dark:bg-gray-800",
+                                "border border-gray-300 dark:border-gray-600",
+                                "hover:bg-gray-50 dark:hover:bg-gray-700/50",
+                                "focus:outline-none focus:ring-2 focus:ring-purple-500/50",
+                                "transition duration-150 ease-in-out",
+                                "flex items-center gap-2"
+                            )}
+                        >
+                            <svg
+                                className="w-4 h-4"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
                             >
-                                <svg
-                                    className="w-4 h-4"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                >
-                                    <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M4 6h16M4 12h16m-7 6h7"
-                                    />
-                                </svg>
-                                格式化
-                            </button>
-                        </div>
-                        <JsonEditor
-                            value={formData.configJson}
-                            onChange={(value) => {
-                                setFormData(prev => ({ ...prev, configJson: value }))
-                                // 清除错误（如果有）
-                                if (errors.configJson) {
-                                    setErrors(prev => ({ ...prev, configJson: undefined }))
-                                }
-                            }}
-                            onFocus={() => setErrors(prev => ({ ...prev, configJson: undefined }))}
-                            onError={(error) => {
-                                if (error) {
-                                    setErrors(prev => ({ ...prev, configJson: error }))
-                                } else {
-                                    setErrors(prev => ({ ...prev, configJson: undefined }))
-                                }
-                            }}
-                            height="400px"
-                        />
+                                <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M4 6h16M4 12h16m-7 6h7"
+                                />
+                            </svg>
+                            格式化
+                        </button>
                     </div>
-                </FormField>
-            </div>
+                    <JsonEditor
+                        ref={jsonEditorRef}
+                        value={formData.authConfig}
+                        onChange={(value) => {
+                            setFormData(prev => ({ ...prev, authConfig: value }))
+                            // 清除错误（如果有）
+                            if (errors.authConfig) {
+                                setErrors(prev => ({ ...prev, authConfig: undefined }))
+                            }
+                            if (jsonError) {
+                                setJsonError("")
+                            }
+                        }}
+                        onFocus={() => {
+                            setErrors(prev => ({ ...prev, authConfig: undefined }))
+                            setJsonError("")
+                        }}
+                        onError={(error) => {
+                            if (error) {
+                                setErrors(prev => ({ ...prev, authConfig: error }))
+                                setJsonError(error)
+                            } else {
+                                setErrors(prev => ({ ...prev, authConfig: undefined }))
+                                setJsonError("")
+                            }
+                        }}
+                        height="400px"
+                    />
+                </div>
+            </FormField>
+
+            <FormField label="状态" required error={errors.status}>
+                <RadioGroup
+                    value={formData.status}
+                    onChange={(value) => setFormData({ ...formData, status: value as 'ENABLED' | 'DISABLED' })}
+                    options={[
+                        { label: '启用', value: 'ENABLED' },
+                        { label: '禁用', value: 'DISABLED' }
+                    ]}
+                />
+            </FormField>
         </CustomModal>
     )
 }
 
-const TopViewKey = 'AddMcpServerPopup'
+const TopViewKey = 'AddMarketPopup'
 
-export default class AddMcpServerPopup {
-    static topviewId = 0
+export default class AddMarketPopup {
     static hide() {
         TopView.hide(TopViewKey)
     }
@@ -676,3 +636,4 @@ export default class AddMcpServerPopup {
         })
     }
 }
+

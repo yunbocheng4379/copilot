@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.alibaba.cloud.ai.copilot.mapper.McpToolMapper">
+
+    <select id="selectByType" resultType="com.alibaba.cloud.ai.copilot.entity.McpToolData">
+        SELECT * FROM mcp_tool
+        WHERE type = #{type}
+        ORDER BY create_time DESC
+    </select>
+
+    <select id="selectByStatus" resultType="com.alibaba.cloud.ai.copilot.entity.McpToolData">
+        SELECT * FROM mcp_tool
+        WHERE status = #{status}
+        ORDER BY create_time DESC
+    </select>
+
+    <select id="selectByNameLike" resultType="com.alibaba.cloud.ai.copilot.entity.McpToolData">
+        SELECT * FROM mcp_tool
+        WHERE name LIKE CONCAT('%', #{name}, '%')
+        ORDER BY create_time DESC
+    </select>
+
+</mapper>

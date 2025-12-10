@@ -1,246 +1,758 @@
-import React, {FC, useState} from 'react'
+import React, {FC, useCallback, useEffect, useRef, useState, useMemo} from 'react'
 import {useTranslation} from 'react-i18next'
+import {ConfigProvider, Button, Space, Tag, message, Popconfirm, Tooltip, Modal, Descriptions} from 'antd'
+import {ProTable, LightFilter, ProFormText} from '@ant-design/pro-components'
+import type {ProColumns, ActionType} from '@ant-design/pro-components'
+import {
+    EditOutlined,
+    DeleteOutlined,
+    PlayCircleOutlined,
+    PauseCircleOutlined,
+    ExperimentOutlined,
+    PlusOutlined,
+    FileTextOutlined,
+    EyeOutlined
+} from '@ant-design/icons'
 import {SettingContainer, SettingDivider, SettingGroup, SettingTitle} from '..'
 import AddMcpServerPopup from './AddMcpServerPopup'
 import EditMcpJsonPopup from './EditMcpJsonPopup'
 import InstallNpxUv from './InstallNpxUv'
-import NpxSearch from './NpxSearch'
 import useThemeStore from "@/stores/themeSlice"
-import {HStack} from "@/components/Layout"
 import useMCPStore from "@/stores/useMCPSlice"
 import classNames from 'classnames'
+import {
+    fetchMcpServers,
+    deleteMcpServer,
+    updateMcpServerStatus,
+    testMcpTool,
+    batchDeleteMcpServers
+} from '@/api/mcpServers'
+import type {McpToolData} from '@/types/mcp'
 
-const MCPSettings: FC = () => {
+type MCPBrowserWindow = Window & {
+    electron?: unknown
+    myAPI?: {
+        mcp?: {
+            deleteServer?: (name: string) => Promise<void>
+            setServerActive?: (name: string, isActive: boolean) => Promise<void>
+        }
+    }
+}
+
+const getBridgeWindow = (): MCPBrowserWindow | null => {
+    if (typeof window === 'undefined') {
+        return null
+    }
+    return window as MCPBrowserWindow
+}
+
+interface MCPSettingsProps {
+    isActive?: boolean
+}
+
+const MCPSettings: FC<MCPSettingsProps> = ({isActive = false}) => {
     const { t } = useTranslation()
     const { isDarkMode } = useThemeStore()
-    const mcpServers = useMCPStore(state => state.getAllServers)
+    const servers = useMCPStore(state => state.servers)
+    const setServers = useMCPStore(state => state.setServers)
     const deleteServer = useMCPStore(state => state.deleteServer)
     const setServerActive = useMCPStore(state => state.setServerActive)
-    const [loadingServer, setLoadingServer] = useState<string | null>(null)
+    // 使用对象来区分不同操作的 loading 状态
+    const [loadingStates, setLoadingStates] = useState<{
+        status?: number | null
+        test?: number | null
+    }>({})
+    const [fetchError, setFetchError] = useState<string | null>(null)
+    const [detailModalVisible, setDetailModalVisible] = useState(false)
+    const [detailRecord, setDetailRecord] = useState<McpToolData | null>(null)
+    const [tableData, setTableData] = useState<McpToolData[]>([])
+    const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+    const tableDataRef = useRef<McpToolData[]>([])
+    const actionRef = useRef<ActionType>()
+    const formRef = useRef<any>()
+    const hasFetchedOnceRef = useRef(false)
+    const lastSearchKeywordRef = useRef<string | undefined>(undefined)
+    const forceRefreshRef = useRef(false)
 
-    const handleDelete = async (serverName: string) => {
-        if (window.confirm(t('settings.mcp.confirmDeleteMessage'))) {
-            try {
-                // 在 Electron 环境下使用 window.myAPI，否则使用 Zustand store
-                if (window.electron && window.myAPI?.mcp?.deleteServer) {
-                    await window.myAPI.mcp.deleteServer(serverName)
-                } else {
-                    await deleteServer(serverName)
-                }
-                console.info(t('settings.mcp.deleteSuccess'))
-            } catch (error: any) {
-                console.error(`${t('settings.mcp.deleteError')}: ${error.message}`)
-            }
-        }
-    }
-
-    const handleToggleActive = async (name: string, isActive: boolean) => {
-        setLoadingServer(name)
+    const fetchRemoteServers = useCallback(async (params?: {
+        keyword?: string
+        type?: string
+        status?: string
+    }) => {
         try {
-            // 在 Electron 环境下使用 window.myAPI，否则使用 Zustand store
-            if (window.electron && window.myAPI?.mcp?.setServerActive) {
-                await window.myAPI.mcp.setServerActive(name, isActive)
+            const remoteServers = await fetchMcpServers(params)
+            // 为了兼容旧的 store，将新数据转换为旧格式
+            const convertedServers = remoteServers.map(tool => ({
+                name: tool.name,
+                description: tool.description || undefined,
+                isActive: tool.status === 'ENABLED',
+                id: tool.id
+            }))
+            setServers(convertedServers as any)
+            // 更新本地表格数据
+            setTableData(remoteServers)
+            tableDataRef.current = remoteServers
+            return remoteServers
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : 'Failed to load MCP servers'
+            setFetchError(errorMessage)
+            console.error('Failed to load MCP servers:', error)
+            throw error
+        }
+    }, [setServers])
+
+    // 移除 useEffect 中的初始请求，让 ProTable 的 request 函数来处理初始加载
+    // 这样可以避免重复请求
+
+    const handleDelete = useCallback(async (id: number) => {
+        try {
+            const result = await deleteMcpServer(id)
+            if (result.success) {
+                message.success(result.message || t('settings.mcp.deleteSuccess'))
+                // 乐观更新：从本地数据中移除已删除的项
+                setTableData(prevData => {
+                    const updated = prevData.filter(item => item.id !== id)
+                    tableDataRef.current = updated
+                    // 同步更新 store
+                    const convertedServers = updated.map(tool => ({
+                        name: tool.name,
+                        description: tool.description || undefined,
+                        isActive: tool.status === 'ENABLED',
+                        id: tool.id
+                    }))
+                    setServers(convertedServers as any)
+                    return updated
+                })
             } else {
-                await setServerActive(name, isActive)
+                message.error(result.message || t('settings.mcp.deleteError'))
             }
         } catch (error: any) {
-            console.error(`${t('settings.mcp.toggleError')}: ${error.message}`)
+            message.error(error.message || `${t('settings.mcp.deleteError')}: ${error.message}`)
+        }
+    }, [setServers, t])
+
+    const handleBatchDelete = useCallback(async () => {
+        if (selectedRowKeys.length === 0) {
+            message.warning('请至少选择一条记录')
+            return
+        }
+
+        try {
+            const result = await batchDeleteMcpServers(selectedRowKeys as (number | string)[])
+            if (result.success) {
+                message.success(result.message || '批量删除成功')
+                // 乐观更新：从本地数据中移除已删除的项
+                setTableData(prevData => {
+                    const updated = prevData.filter(item => !selectedRowKeys.includes(item.id))
+                    tableDataRef.current = updated
+                    // 同步更新 store
+                    const convertedServers = updated.map(tool => ({
+                        name: tool.name,
+                        description: tool.description || undefined,
+                        isActive: tool.status === 'ENABLED',
+                        id: tool.id
+                    }))
+                    setServers(convertedServers as any)
+                    return updated
+                })
+                // 清空选择
+                setSelectedRowKeys([])
+            } else {
+                message.error(result.message || '批量删除失败')
+            }
+        } catch (error: any) {
+            message.error(error.message || `批量删除失败: ${error.message}`)
+        }
+    }, [selectedRowKeys, setServers])
+
+    const handleTest = async (id: number) => {
+        setLoadingStates(prev => ({ ...prev, test: id }))
+        try {
+            const result = await testMcpTool(id)
+            if (result.success) {
+                alert('测试成功: ' + result.message)
+            } else {
+                alert('测试失败: ' + result.message)
+            }
+        } catch (error: any) {
+            alert('测试失败: ' + error.message)
         } finally {
-            setLoadingServer(null)
+            setLoadingStates(prev => ({ ...prev, test: null }))
         }
     }
 
-    // 移除 Electron 限制，支持 Web 环境下的 MCP 服务器管理
+    const handleToggleActive = useCallback(async (id: number, currentStatus: 'ENABLED' | 'DISABLED') => {
+        // 乐观更新：先更新本地状态
+        const newStatus = currentStatus === 'ENABLED' ? 'DISABLED' : 'ENABLED'
+        let previousData: McpToolData[] = []
+        
+        // 立即更新本地状态，实现乐观更新
+        setTableData(prevData => {
+            previousData = [...prevData]
+            const updated = prevData.map(item => 
+                item.id === id 
+                    ? { ...item, status: newStatus as 'ENABLED' | 'DISABLED' }
+                    : item
+            )
+            tableDataRef.current = updated
+            return updated
+        })
+        
+        setLoadingStates(prev => ({ ...prev, status: id }))
+        
+        try {
+            const result = await updateMcpServerStatus(id, newStatus)
+            if (result.success) {
+                message.success(result.message || `状态已${newStatus === 'ENABLED' ? '启用' : '禁用'}`)
+                // 同步更新 store
+                setTableData(prevData => {
+                    const convertedServers = prevData.map(tool => ({
+                        name: tool.name,
+                        description: tool.description || undefined,
+                        isActive: tool.status === 'ENABLED',
+                        id: tool.id
+                    }))
+                    setServers(convertedServers as any)
+                    return prevData
+                })
+            } else {
+                // 回滚状态
+                setTableData(previousData)
+                tableDataRef.current = previousData
+                message.error(result.message || '状态更新失败')
+            }
+        } catch (error: any) {
+            // 回滚状态
+            setTableData(previousData)
+            tableDataRef.current = previousData
+            message.error(error.message || `${t('settings.mcp.toggleError')}: ${error.message}`)
+        } finally {
+            setLoadingStates(prev => ({ ...prev, status: null }))
+        }
+    }, [setServers, t])
+
+    // 定义表格列 - 使用 useMemo 优化性能
+    const columns: ProColumns<McpToolData>[] = useMemo(() => [
+        {
+            title: '名称',
+            dataIndex: 'name',
+            key: 'name',
+            width: 150,
+            ellipsis: true,
+            hideInTable: false,
+            hideInSearch: true, // 不在搜索区域显示，使用 toolbar filter
+        },
+        {
+            title: '类型',
+            dataIndex: 'type',
+            key: 'type',
+            width: 100,
+            align: 'center',
+            valueType: 'select',
+            valueEnum: {
+                REMOTE: { text: '远程', status: 'Default' },
+                LOCAL: { text: '本地', status: 'Default' },
+            },
+            hideInSearch: true, // 不在搜索区域显示，只在列中筛选
+            filters: true,
+            onFilter: true,
+            render: (_, record) => {
+                const type = record.type
+                return (
+                    <Tag color={type === 'REMOTE' ? 'blue' : 'cyan'}>
+                        {type === 'REMOTE' ? '远程' : '本地'}
+                    </Tag>
+                )
+            },
+        },
+        {
+            title: '描述',
+            dataIndex: 'description',
+            key: 'description',
+            width: 300,
+            hideInSearch: true,
+            hideInTable: true,
+            ellipsis: {
+                showTitle: false,
+            },
+            render: (text: string) => text || <span className="italic text-gray-400">无描述</span>,
+        },
+        {
+            title: '状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 100,
+            align: 'center',
+            valueType: 'select',
+            valueEnum: {
+                ENABLED: { text: '启用', status: 'Success' },
+                DISABLED: { text: '禁用', status: 'Default' },
+            },
+            hideInSearch: true, // 不在搜索区域显示，只在列中筛选
+            filters: true,
+            onFilter: true,
+            render: (_, record) => {
+                // 直接从 record 获取状态值，确保是 ENABLED 或 DISABLED
+                const status = record.status
+                const isEnabled = status === 'ENABLED'
+                return (
+                    <Tag color={isEnabled ? 'green' : 'default'}>
+                        {isEnabled ? '启用' : '禁用'}
+                    </Tag>
+                )
+            },
+        },
+        {
+            title: '创建时间',
+            dataIndex: 'createTime',
+            key: 'createTime',
+            width: 180,
+            hideInSearch: true,
+            hideInTable: true,
+            align: 'center',
+            render: (text: string) => text ? new Date(text).toLocaleString('zh-CN') : '-',
+        },
+        {
+            title: '更新时间',
+            dataIndex: 'updateTime',
+            key: 'updateTime',
+            width: 180,
+            hideInSearch: true,
+            hideInTable: true,
+            align: 'center',
+            render: (text: string) => text ? new Date(text).toLocaleString('zh-CN') : '-',
+        },
+        {
+            title: '操作',
+            key: 'action',
+            width: 180,
+            hideInSearch: true,
+            align: 'center',
+            fixed: 'right',
+            render: (_, record) => {
+                // 直接从 record 获取状态值，确保是 ENABLED 或 DISABLED
+                const currentStatus = (record.status === 'ENABLED' || record.status === 'DISABLED') 
+                    ? record.status as 'ENABLED' | 'DISABLED' 
+                    : 'ENABLED'  // 默认启用状态
+                const isEnabled = currentStatus === 'ENABLED'
+                return (
+                    <Space size="small">
+                        <Tooltip title="查看详情">
+                            <Button
+                                type="link"
+                                size="small"
+                                icon={<EyeOutlined />}
+                                onClick={() => {
+                                    setDetailRecord(record)
+                                    setDetailModalVisible(true)
+                                }}
+                            />
+                        </Tooltip>
+                        <Tooltip title="编辑">
+                            <Button
+                                type="link"
+                                size="small"
+                                icon={<EditOutlined />}
+                                onClick={async () => {
+                                    try {
+                                        const result = await AddMcpServerPopup.show({ server: record })
+                                        if (result && (result as McpToolData).id) {
+                                            // 乐观更新：更新表格中对应的数据
+                                            setTableData(prevData => {
+                                                const updatedData = prevData.map(item => 
+                                                    item.id === record.id 
+                                                        ? (result as McpToolData)
+                                                        : item
+                                                )
+                                                tableDataRef.current = updatedData
+                                                // 同步更新 store
+                                                const convertedServers = updatedData.map(tool => ({
+                                                    name: tool.name,
+                                                    description: tool.description || undefined,
+                                                    isActive: tool.status === 'ENABLED',
+                                                    id: tool.id
+                                                }))
+                                                setServers(convertedServers as any)
+                                                return updatedData
+                                            })
+                                        }
+                                    } catch (error: any) {
+                                        // 错误已在 AddMcpServerPopup 中处理，这里不需要额外处理
+                                        console.error('编辑 MCP 服务器失败:', error)
+                                    }
+                                }}
+                            />
+                        </Tooltip>
+                        <Tooltip title={isEnabled ? '禁用' : '启用'}>
+                            <Button
+                                type="link"
+                                size="small"
+                                icon={isEnabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                                loading={loadingStates.status === record.id}
+                                onClick={() => handleToggleActive(record.id, currentStatus)}
+                            />
+                        </Tooltip>
+                        <Tooltip title="测试">
+                            <Button
+                                type="link"
+                                size="small"
+                                icon={<ExperimentOutlined />}
+                                loading={loadingStates.test === record.id}
+                                onClick={() => handleTest(record.id)}
+                            />
+                        </Tooltip>
+                        <Popconfirm
+                            title="确定要删除吗？"
+                            onConfirm={() => handleDelete(record.id)}
+                            okText="确定"
+                            cancelText="取消"
+                        >
+                            <Tooltip title="删除">
+                                <Button
+                                    type="link"
+                                    size="small"
+                                    danger
+                                    icon={<DeleteOutlined />}
+                                />
+                            </Tooltip>
+                        </Popconfirm>
+                    </Space>
+                )
+            },
+        },
+    ], [loadingStates, handleToggleActive, handleDelete, handleTest, setServers])
 
     return (
+        <>
+            <style>{`
+                .mcp-table .ant-pro-card .ant-pro-card-body {
+                    padding-inline: 0 !important;
+                }
+                .mcp-table .ant-pro-query-filter.ant-pro-query-filter {
+                    padding: 12px !important;
+                }
+                .mcp-table .ant-pro-table-list-toolbar {
+                    margin-bottom: 8px !important;
+                    padding-bottom: 0 !important;
+                }
+                .mcp-table .ant-pro-table-search {
+                    margin-bottom: 8px !important;
+                    padding-bottom: 0 !important;
+                }
+                .mcp-table .ant-form {
+                    margin-bottom: 8px !important;
+                }
+                .mcp-table .ant-pro-table-list-toolbar-container {
+                    margin-bottom: 0 !important;
+                    padding-bottom: 0 !important;
+                }
+                .mcp-table .ant-pro-table-search-query {
+                    margin-bottom: 0 !important;
+                }
+                .mcp-table .ant-pro-table-search-query-row {
+                    margin-bottom: 8px !important;
+                }
+                .mcp-table .ant-pro-table-search-query-row:last-child {
+                    margin-bottom: 0 !important;
+                }
+                .mcp-table .ant-pro-table-search-query-form {
+                    margin-bottom: 0 !important;
+                }
+                .mcp-table .ant-pro-table-search-query-form .ant-form-item {
+                    margin-bottom: 8px !important;
+                }
+                .mcp-table .ant-pro-table-search-query-form .ant-form-item:last-child {
+                    margin-bottom: 0 !important;
+                }
+            `}</style>
+        <ConfigProvider
+            theme={{
+                token: {
+                    colorPrimary: '#9333EA',
+                    colorPrimaryHover: '#A855F7',
+                    colorPrimaryActive: '#7E22CE',
+                    colorLink: '#9333EA',
+                    colorLinkHover: '#A855F7',
+                    colorLinkActive: '#7E22CE',
+                },
+                components: {
+                    Button: {
+                        colorPrimary: '#9333EA',
+                        colorPrimaryHover: '#A855F7',
+                        colorPrimaryActive: '#7E22CE',
+                        borderRadius: 8,
+                    },
+                    Tag: {
+                        borderRadiusSM: 12,
+                    },
+                },
+            }}
+        >
         <SettingContainer theme={isDarkMode ? 'dark' : 'light'}>
             <InstallNpxUv />
             <SettingGroup theme={isDarkMode ? 'dark' : 'light'}>
-                <SettingTitle>
-                    <div className="flex items-center gap-2">
-                        MCP 服务器
+
+                {fetchError && (
+                    <div className="mb-2 flex items-center justify-between rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-400/40 dark:bg-red-900/20 dark:text-red-200">
+                        <span>{fetchError}</span>
                         <button
-                            className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-                            title="配置模型上下文协议服务器"
+                            onClick={() => fetchRemoteServers()}
+                            className="text-xs font-medium underline underline-offset-4"
                         >
-                            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" />
-                            </svg>
+                            重试
                         </button>
                     </div>
-                </SettingTitle>
-                <SettingDivider />
-                
-                <div className="flex justify-between items-center mb-4">
-                    <HStack gap={15} className="items-center">
-                        <button
-                            onClick={() => AddMcpServerPopup.show()}
-                            className={classNames(
-                                "px-4 py-2 text-sm font-medium rounded-lg",
-                                "text-white bg-purple-600 hover:bg-purple-700",
-                                "dark:bg-purple-600 dark:hover:bg-purple-700",
-                                "focus:outline-none focus:ring-2 focus:ring-purple-500/50",
-                                "transition-colors duration-200",
-                                "flex items-center gap-2"
-                            )}
-                        >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                            </svg>
-                            添加 MCP 服务器
-                        </button>
-                        <button
-                            onClick={() => EditMcpJsonPopup.show()}
-                            className={classNames(
-                                "px-4 py-2 text-sm font-medium rounded-lg",
-                                "text-gray-700 dark:text-gray-300",
-                                "bg-white dark:bg-gray-800",
-                                "border border-gray-300 dark:border-gray-600",
-                                "hover:bg-gray-50 dark:hover:bg-gray-700",
-                                "focus:outline-none focus:ring-2 focus:ring-purple-500/50",
-                                "transition-colors duration-200",
-                                "flex items-center gap-2"
-                            )}
-                        >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                            </svg>
-                            编辑 JSON
-                        </button>
-                    </HStack>
+                )}
+                <div className="w-full" style={{ margin: '0 -28px', padding: '0 28px' }}>
+                    <ProTable<McpToolData>
+                        actionRef={actionRef}
+                        columns={columns}
+                        rowKey="id"
+                        dataSource={tableData}
+                        formRef={formRef}
+                        request={async (params, sort, filter) => {
+                            // 从 formRef 中获取 LightFilter 的值
+                            const formValues = formRef.current?.getFieldsValue?.() || {}
+                            // 处理空字符串，转换为 undefined（空字符串表示清除搜索，应该获取全部数据）
+                            const nameKeyword = formValues.name?.trim() || params.name?.trim() || undefined
+                            
+                            // 检查是否需要强制刷新（搜索值发生变化时）
+                            const needForceRefresh = forceRefreshRef.current
+                            forceRefreshRef.current = false // 重置标志
+                            
+                            // 检查是否有搜索或筛选参数
+                            const hasSearchParams = nameKeyword || 
+                                (filter && (filter.type || filter.status)) ||
+                                (params.current && params.current > 1) // 分页也算需要请求
+                            
+                            // 检查是否有列筛选
+                            const hasColumnFilter = filter && (filter.type || filter.status)
+                            
+                            // 如果没有搜索参数且 tableData 有数据且是第一页，且不需要强制刷新，直接返回（支持乐观更新）
+                            // 但如果有列筛选，或者需要强制刷新，或者首次加载（tableData 为空），仍然需要请求服务器
+                            if (!hasSearchParams && !hasColumnFilter && !needForceRefresh && tableData.length > 0 && (!params.current || params.current === 1)) {
+                                // 直接返回本地数据（乐观更新）
+                                return {
+                                    data: tableData,
+                                    success: true,
+                                    total: tableData.length,
+                                }
+                            }
+                            
+                            // 标记首次加载已完成
+                            if (!hasFetchedOnceRef.current) {
+                                hasFetchedOnceRef.current = true
+                            }
+                            
+                            try {
+                                setFetchError(null)
+                                // 从 filter 中获取类型和状态的筛选值
+                                const typeFilter = filter?.type as string[] | string | undefined
+                                const statusFilter = filter?.status as string[] | string | undefined
+                                
+                                const data = await fetchRemoteServers({
+                                    keyword: nameKeyword || undefined, // 工具名模糊搜索，如果为空则传递 undefined 获取全部数据
+                                    type: Array.isArray(typeFilter) ? typeFilter[0] : typeFilter,
+                                    status: Array.isArray(statusFilter) ? statusFilter[0] : statusFilter,
+                                })
+                                // 更新本地表格数据
+                                setTableData(data)
+                                tableDataRef.current = data
+                                return {
+                                    data,
+                                    success: true,
+                                    total: data.length,
+                                }
+                            } catch (error) {
+                                return {
+                                    data: tableData.length > 0 ? tableData : [],
+                                    success: false,
+                                    total: tableData.length,
+                                }
+                            }
+                        }}
+                        rowSelection={{
+                            selectedRowKeys,
+                            onChange: (keys) => {
+                                setSelectedRowKeys(keys)
+                            },
+                            getCheckboxProps: (record) => ({
+                                name: record.name,
+                            }),
+                        }}
+                        options={{
+                            reload: true,
+                        }}
+                        search={false}
+                        toolbar={{
+                            title: 'MCP 服务器',
+                            filter: (
+                                <LightFilter
+                                    formRef={formRef}
+                                    onValuesChange={(values) => {
+                                        // 当搜索值改变时（包括清除），触发表格重新加载
+                                        const currentKeyword = values.name?.trim() || undefined
+                                        const previousKeyword = lastSearchKeywordRef.current
+                                        
+                                        // 如果搜索值发生变化，标记需要强制刷新
+                                        if (previousKeyword !== currentKeyword) {
+                                            forceRefreshRef.current = true
+                                            // 更新上一次的搜索值
+                                            lastSearchKeywordRef.current = currentKeyword
+                                            // 延迟一下确保 formRef 已更新，然后强制重新加载
+                                            setTimeout(() => {
+                                                actionRef.current?.reload()
+                                            }, 0)
+                                        }
+                                    }}
+                                >
+                                    <ProFormText
+                                        name="name"
+                                        label="工具名"
+                                        placeholder="请输入（模糊搜索）"
+                                        fieldProps={{
+                                            allowClear: true,
+                                        }}
+                                    />
+                                </LightFilter>
+                            ),
+                            actions: [
+                                <Button
+                                    key="add"
+                                    type="primary"
+                                    icon={<PlusOutlined />}
+                                    onClick={async () => {
+                                        const result = await AddMcpServerPopup.show()
+                                        if (result) {
+                                            // 乐观更新：将新添加的数据添加到表格
+                                            setTableData(prevData => {
+                                                const updated = [...prevData, result as McpToolData]
+                                                tableDataRef.current = updated
+                                                // 同步更新 store
+                                                const convertedServers = updated.map(tool => ({
+                                                    name: tool.name,
+                                                    description: tool.description || undefined,
+                                                    isActive: tool.status === 'ENABLED',
+                                                    id: tool.id
+                                                }))
+                                                setServers(convertedServers as any)
+                                                return updated
+                                            })
+                                            // 刷新表格
+                                            actionRef.current?.reload()
+                                        }
+                                    }}
+                                >
+                                    添加
+                                </Button>,
+                            ],
+                        }}
+                        tableAlertOptionRender={({ selectedRowKeys, onCleanSelected }) => {
+                            return (
+                                <Space size={16}>
+                                    <span>
+                                        已选 {selectedRowKeys.length} 项
+                                    </span>
+                                    <a onClick={onCleanSelected}>取消选择</a>
+                                    <Popconfirm
+                                        title={`确定要删除选中的 ${selectedRowKeys.length} 条记录吗？`}
+                                        onConfirm={handleBatchDelete}
+                                        okText="确定"
+                                        cancelText="取消"
+                                    >
+                                        <Button
+                                            danger
+                                            icon={<DeleteOutlined />}
+                                            disabled={selectedRowKeys.length === 0}
+                                        >
+                                            批量删除
+                                        </Button>
+                                    </Popconfirm>
+                                </Space>
+                            )
+                        }}
+                        className="mcp-table"
+                        style={{
+                            paddingTop: 0,
+                        }}
+                        scroll={{
+                            x: 'max-content',
+                            y: 'calc(100vh - 480px)',
+                        }}
+                        pagination={{
+                            pageSize: 10,
+                            showSizeChanger: true,
+                            showQuickJumper: true,
+                            showTotal: (total) => `共 ${total} 条`,
+                            pageSizeOptions: ['10', '20', '50', '100'],
+                        }}
+                            rowClassName={(record) => {
+                                const status = record.status as string
+                                return (status === 'DISABLED') ? 'opacity-70' : ''
+                            }}
+                        locale={{
+                            emptyText: '未配置服务器',
+                        }}
+                        size="middle"
+                    />
                 </div>
 
-                <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                    <table className="w-full border-collapse bg-white dark:bg-gray-800">
-                        <thead>
-                            <tr className="border-b border-gray-200 dark:border-gray-700">
-                                <th className="px-4 py-3 text-left text-sm font-medium text-gray-900 dark:text-gray-100 w-[160px]">
-                                    名称
-                                </th>
-                                <th className="px-4 py-3 text-center text-sm font-medium text-gray-900 dark:text-gray-100 w-[70px]">
-                                    类型
-                                </th>
-                                <th className="px-4 py-3 text-left text-sm font-medium text-gray-900 dark:text-gray-100">
-                                    描述
-                                </th>
-                                <th className="px-4 py-3 text-center text-sm font-medium text-gray-900 dark:text-gray-100 w-[80px]">
-                                    启用
-                                </th>
-                                <th className="px-4 py-3 text-center text-sm font-medium text-gray-900 dark:text-gray-100 w-[100px]">
-                                    操作
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {mcpServers().length === 0 ? (
-                                <tr>
-                                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-                                        未配置服务器
-                                    </td>
-                                </tr>
-                            ) : (
-                                mcpServers().map((server) => (
-                                    <tr 
-                                        key={server.name}
-                                        className={classNames(
-                                            "border-b border-gray-200 dark:border-gray-700",
-                                            !server.isActive && "bg-gray-50 dark:bg-gray-900/50 opacity-70"
-                                        )}
-                                    >
-                                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100 font-medium truncate">
-                                            {server.name}
-                                        </td>
-                                        <td className="px-4 py-3 text-center">
-                                            <span className={classNames(
-                                                "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",
-                                                server.baseUrl ? 
-                                                    "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300" :
-                                                    "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300"
-                                            )}>
-                                                {server.baseUrl ? 'SSE' : 'STDIO'}
-                                            </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                                            <div className="line-clamp-2 break-all">
-                                                {server.description || (
-                                                    <span className="italic">无描述</span>
-                                                )}
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3 text-center">
-                                            <button
-                                                onClick={() => handleToggleActive(server.name, !server.isActive)}
-                                                className={classNames(
-                                                    "relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out",
-                                                    server.isActive ? "bg-purple-600" : "bg-gray-200 dark:bg-gray-700"
-                                                )}
-                                                disabled={loadingServer === server.name}
-                                            >
-                                                <span 
-                                                    className={classNames(
-                                                        "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition-all duration-300 ease-in-out",
-                                                        server.isActive ? "translate-x-5" : "translate-x-0.5",
-                                                        "mt-0.5",
-                                                        loadingServer === server.name ? "bg-transparent flex items-center justify-center" : "bg-white"
-                                                    )}
-                                                    style={{ willChange: 'transform' }}
-                                                >
-                                                    {loadingServer === server.name && (
-                                                        <svg 
-                                                            className={classNames(
-                                                                "w-4 h-4 animate-spin", 
-                                                                server.isActive ? "text-white" : "text-gray-700 dark:text-gray-300"
-                                                            )} 
-                                                            xmlns="http://www.w3.org/2000/svg" 
-                                                            fill="none" 
-                                                            viewBox="0 0 24 24"
-                                                        >
-                                                            <circle className="opacity-40" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
-                                                            <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                        </svg>
-                                                    )}
-                                                </span>
-                                            </button>
-                                        </td>
-                                        <td className="px-4 py-3 text-center">
-                                            <div className="flex items-center justify-center gap-2">
-                                                <button
-                                                    onClick={() => AddMcpServerPopup.show({ server })}
-                                                    className={classNames(
-                                                        "p-1 rounded-md",
-                                                        "text-purple-600 hover:text-purple-700",
-                                                        "dark:text-purple-500 dark:hover:text-purple-400",
-                                                        "focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-                                                    )}
-                                                >
-                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                                    </svg>
-                                                </button>
-                                                <button
-                                                    onClick={() => handleDelete(server.name)}
-                                                    className={classNames(
-                                                        "p-1 rounded-md",
-                                                        "text-red-600 hover:text-red-700",
-                                                        "dark:text-red-500 dark:hover:text-red-400",
-                                                        "focus:outline-none focus:ring-2 focus:ring-red-500/50"
-                                                    )}
-                                                >
-                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                    </svg>
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
-                </div>
+                {/* 详情弹框 */}
+                <Modal
+                    title="工具详情"
+                    open={detailModalVisible}
+                    onCancel={() => setDetailModalVisible(false)}
+                    footer={[
+                        <Button key="close" onClick={() => setDetailModalVisible(false)}>
+                            关闭
+                        </Button>
+                    ]}
+                    width={800}
+                >
+                    {detailRecord && (
+                        <Descriptions column={1} bordered>
+                            <Descriptions.Item label="ID">{detailRecord.id}</Descriptions.Item>
+                            <Descriptions.Item label="名称">{detailRecord.name}</Descriptions.Item>
+                            <Descriptions.Item label="类型">
+                                <Tag color={detailRecord.type === 'REMOTE' ? 'blue' : 'cyan'}>
+                                    {detailRecord.type === 'REMOTE' ? '远程' : '本地'}
+                                </Tag>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="描述">
+                                {detailRecord.description || <span className="italic text-gray-400">无描述</span>}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="状态">
+                                <Tag color={(detailRecord.status as string) === 'ENABLED' ? 'green' : 'default'}>
+                                    {(detailRecord.status as string) === 'ENABLED' ? '启用' : '禁用'}
+                                </Tag>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="配置信息">
+                                <pre style={{
+                                    maxHeight: '300px',
+                                    overflow: 'auto',
+                                    padding: '12px',
+                                    background: isDarkMode ? '#1f1f1f' : '#f5f5f5',
+                                    borderRadius: '4px',
+                                    fontSize: '12px',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all'
+                                }}>
+                                    {detailRecord.configJson ? JSON.stringify(JSON.parse(detailRecord.configJson), null, 2) : '无配置信息'}
+                                </pre>
+                            </Descriptions.Item>
+                            <Descriptions.Item label="创建时间">
+                                {detailRecord.createTime ? new Date(detailRecord.createTime).toLocaleString('zh-CN') : '-'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="更新时间">
+                                {detailRecord.updateTime ? new Date(detailRecord.updateTime).toLocaleString('zh-CN') : '-'}
+                            </Descriptions.Item>
+                        </Descriptions>
+                    )}
+                </Modal>
             </SettingGroup>
-            <NpxSearch />
         </SettingContainer>
+        </ConfigProvider>
+        </>
     )
 }
 

@@ -58,6 +58,12 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-model-chat-memory-repository-jdbc</artifactId>
         </dependency>
+
+        <!-- Spring AI MCP Client -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-client-webflux</artifactId>
+        </dependency>
     </dependencies>
 
 </project>
